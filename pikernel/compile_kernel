@@ -1,0 +1,177 @@
+#!/bin/bash
+#
+# compile_kernel
+#
+# (c) Chris Obbard 2016
+#
+# Downloads, compiles and packages the RPi Linux Kernel from a Source Commit
+#
+# ./generate_firmware firmware-rpi master       # generates the firmware package from the master commit
+# ./generate_firmware linux-image-rpi master    # generates the linux-image package from the master commit
+#
+# For now, this script only supports generating HardFP on the RPi 3 (possibly 2, untested)
+#
+#
+# 2cf8fd5ba0b195e16627df6a5b45f47c0edc3a54 is 4.4.17
+# todo: get version from https://raw.githubusercontent.com/raspberrypi/linux/d31c6f2420afca543abf466e6bc18c17f15eb291/Makefile
+# todo: merge scripts?
+# todo: autopopulate Version field in control files; auto generate control files
+# todo: figure out Version field for firmware-rpi
+# https://github.com/raspberrypi/linux/archive/rpi-4.4.y.zip
+# parse arguments
+if (( $# < 1 )); then
+    echo ""
+    echo "compile_kernel: Kernel Compiler"
+    echo ""
+    echo "You must pass at least one argument."
+    echo "./compile_kernel <action>"
+    echo ""
+    echo ""
+    echo "./compile_kernel download rpi-4.4.y  prepares the environment from the rpi-4.4.y branch"
+    echo "./compile_kernel make                makes the linux-image-rpi package from the already-downloaded sources"
+    echo ""
+    echo "Magic Script written by Chris Obbard <chris@64studio.com>"
+    exit 1
+fi
+
+ACTION=$1
+KERNEL_COMMIT=$2
+
+# todo: move these into a seperate file
+function info {
+	echo "[I] generate_firmware: $1"
+}
+
+function error {
+	echo "[E] generate_firmware: $1"
+    exit 1
+}
+
+if [ "$ACTION" = "download" ]; then
+    # get a clean slate
+    rm -rf kernel/
+    rm -rf kernel_tools/
+
+    if [ ! -d "kernel" ]; then
+        info "no kernel source found; downloading Foundation source"
+        wget --quiet --output-document kernel.zip https://github.com/raspberrypi/linux/archive/$KERNEL_COMMIT.zip
+        unzip -qq kernel.zip
+        rm kernel.zip
+        mkdir kernel
+        mv linux-*/* kernel/
+        rm linux-*/ -rf
+        info "kernel source downloaded!"
+    fi
+
+    if [ ! -d "kernel_tools" ]; then
+        info "no kernel tools found; downloading"
+        wget --quiet --output-document kernel_tools.zip https://github.com/raspberrypi/tools/archive/master.zip
+        unzip -qq kernel_tools.zip
+        rm kernel_tools.zip
+        mkdir kernel_tools
+        mv tools-*/* kernel_tools/
+        rm tools-*/ -rf
+        info "kernel tools downloaded"
+    fi
+elif [ "$ACTION" = "make" ]; then
+    info "Compiling & packaging linux kernel"
+    
+    if [ -f "linux-image-rpi.deb" ]; then
+        exit "Kernel image linux-image-rpi.deb already exists!"
+    fi
+    
+    # move needed files to package temporary folder
+    if [ -d "tmp" ]; then
+        rm -rf tmp
+    fi
+
+    # environment
+    mkdir tmp
+    mkdir tmp/boot
+    mkdir tmp/boot/overlays
+    
+    # convoluted way of calculating number of host CPU cores...
+    KERNEL_J=`nproc`
+    KERNEL_J=`echo 1.5*$KERNEL_J | bc`
+    KERNEL_J=${KERNEL_J%.*}
+    #KERNEL_J=6 # cpu cores * 1.5
+
+    KERNEL_TYPE=bcm2709  #bcm2708 for pi1, bcm2709 for pi3. We only support pi3, anyway
+    
+    # figure out toolchain to use
+    PWD=`pwd`
+    if [ `arch` = "i386" ]; then
+        TOOLCHAIN=$PWD/kernel_tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin
+    elif [ `arch` = "x86_64" ]; then
+        TOOLCHAIN=$PWD/kernel_tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian-x64/bin
+    else
+        error "Unsupported arch! Quitting."
+    fi
+
+    #figure out what we are compiling
+    if [ "$KERNEL_TYPE" = bcm2708 ]; then
+        KERNEL_VERSION=kernel
+        KERNEL_CONFIG=bcmrpi_defconfig
+    elif [ "$KERNEL_TYPE" = bcm2709 ]; then
+        KERNEL_VERSION=kernel7
+        KERNEL_CONFIG=bcm2709_defconfig
+    fi
+
+    # export the MAKE settings
+    export KERNEL=$KERNEL_VERSION
+    export ARCH=arm
+    export CROSS_COMPILE=$TOOLCHAIN/arm-linux-gnueabihf-
+    export INSTALL_MOD_PATH=$PWD/tmp
+
+    # we will configure the kernel with the defaults as you are too lazy to do so ;-)
+    if [ ! -f "kernel/.config" ]; then
+        info "Configuring kernel with default settings"
+        make --directory=kernel -j$KERNEL_J $KERNEL_CONFIG
+    fi
+
+    info "Compiling Kernel"
+    make --directory=kernel -j$KERNEL_J zImage modules dtbs
+    make --directory=kernel -j$KERNEL_J modules_install
+
+    #mv firmware/boot/COPYING.linux tmp/boot/
+    
+    
+    # move kernel stuff
+    ./kernel/scripts/mkknlimg kernel/arch/arm/boot/zImage tmp/boot/$KERNEL.img
+    cp kernel/arch/arm/boot/dts/*.dtb tmp/boot/
+    cp kernel/arch/arm/boot/dts/overlays/*.dtbo tmp/boot/overlays
+    cp kernel/COPYING tmp/boot/COPYING.linux
+
+    # remove firmware
+    rm -rf $INSTALL_MOD_PATH/lib/firmware
+
+    info "Compiling Kernel: FINISHED"
+    
+    # add in the packaging files
+    mkdir tmp/DEBIAN
+
+    # maybe we should script this?
+    cp control/linux-image-rpi.control tmp/DEBIAN/control
+
+    #chown files
+    chown root:root -R tmp/
+
+    # make debian package
+    # todo: find a better way of making this quiet
+    dpkg-deb --build tmp > /dev/null
+
+    # make the name a bit more familiar
+    mv tmp.deb linux-image-rpi.deb
+
+    # remove tmp dir
+    if [ -d "tmp" ]; then
+        rm -rf tmp
+    fi
+
+    # remove firmware dir
+    if [ -d "firmware" ]; then
+        rm -rf firmware
+    fi
+else
+    error "Not an action!"
+fi

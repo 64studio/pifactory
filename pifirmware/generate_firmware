@@ -1,0 +1,135 @@
+#!/bin/bash
+#
+# generate_firmware
+#
+# (c) Chris Obbard 2016
+#
+# Downloads and packages the RPi Non-free Firmware
+#
+# Downloads and packages the RPi Linux Kernel
+#
+# ./generate_firmware firmware-rpi master       # generates the firmware package from the master commit
+# ./generate_firmware linux-image-rpi master    # generates the linux-image package from the master commit
+#
+# For now, this script only supports generating HardFP on the RPi 3 (possibly 2, untested)
+#
+#
+# 2cf8fd5ba0b195e16627df6a5b45f47c0edc3a54 is 4.4.17
+#
+# todo: get version from https://raw.githubusercontent.com/raspberrypi/linux/d31c6f2420afca543abf466e6bc18c17f15eb291/Makefile
+# todo: merge scripts?
+# todo: HIGH PRIORITY   remove modules from firmware.zip that are not compiled for  v7? 50MB saving.
+# todo: autopopulate Version field in control files; auto generate control files
+# todo: figure out Version field for firmware-rpi
+
+# parse arguments
+if (( $# != 2 )); then
+    echo ""
+    echo "generate_firmware: Firmware Packager"
+    echo ""
+    echo "You must pass two arguments."
+    echo "./generate_firmware <package_type> <commit_id>"
+    echo ""
+    echo ""
+    echo "./generate_firmware firmware-rpi master       generates the firmware-rpi package from the master commit"
+    echo "./generate_firmware linux-image-rpi master    generates the linux-image-rpi package from the master commit"
+    echo ""
+    echo "Magic Script written by Chris Obbard <chris@64studio.com>"
+    exit 1
+fi
+
+ACTION=$1
+FIRMWARE_COMMIT=$2
+
+# todo: move these into a seperate file
+function info {
+	echo "[I] generate_firmware: $1"
+}
+
+function error {
+	echo "[E] generate_firmware: $1"
+    exit 1
+}
+
+if [ -f "firmware.zip" ]; then
+    # if firmware.zip exists then use it
+    # info "firmware already exists; not removing."
+    # info "run 'rm firmware.zip' to clean"
+    :
+else
+    # download the firmware from the Github repo
+    # no need to make this an argument
+    wget --quiet --output-document firmware.zip https://github.com/raspberrypi/firmware/archive/$FIRMWARE_COMMIT.zip
+    if (($? > 0)); then
+        error "Failed to download firmware!"
+    fi
+    
+fi
+
+# if firmware/ exists then remove it
+if [ -d "firmware" ]; then
+    rm -rf firmware
+fi
+
+# unzip to firmware/
+unzip -qq firmware.zip
+mv firmware-*/ firmware/
+
+# move needed files to package temporary folder
+if [ -d "tmp" ]; then
+    rm -rf tmp
+fi
+
+mkdir tmp
+
+# first get a list of the files to move
+if [ "$ACTION" = "firmware-rpi" ]; then
+    info "Re-packaging non-free firmware"
+    mkdir tmp/boot
+    mv firmware/boot/bootcode.bin tmp/boot/
+    mv firmware/boot/fixup*.dat tmp/boot/
+    mv firmware/boot/LICENCE.broadcom tmp/boot/
+    mv firmware/boot/start*.elf tmp/boot/
+    mv firmware/hardfp/opt/ tmp/opt/
+elif [ "$ACTION" = "linux-image-rpi" ]; then
+    info "Re-packaging linux kernel"
+    KERNEL_HASH=`cat firmware/extra/git_hash`
+    info " Kernel Source git commit: $KERNEL_HASH"
+    mkdir tmp/boot
+    mkdir tmp/boot/overlays
+    mkdir tmp/lib
+    
+    mv firmware/boot/overlays/*.dtbo tmp/boot/overlays/
+    mv firmware/boot/*.dtb tmp/boot/
+    mv firmware/boot/kernel7.img tmp/boot/
+    mv firmware/boot/COPYING.linux tmp/boot/
+    mv firmware/modules/ tmp/lib/modules/
+else
+    error "Not an action!"
+fi
+
+# set the owner of the tmp dir
+chown root:root -R tmp/
+
+# add in the packaging files
+mkdir tmp/DEBIAN
+
+# maybe we should script this?
+cp control/$ACTION.control tmp/DEBIAN/control
+
+# make debian package
+# todo: find a better way of making this quiet
+dpkg-deb --build tmp > /dev/null
+
+# make the name a bit more familiar
+mv tmp.deb $ACTION.deb
+
+# remove tmp dir
+if [ -d "tmp" ]; then
+    rm -rf tmp
+fi
+
+# remove firmware dir
+if [ -d "firmware" ]; then
+    rm -rf firmware
+fi

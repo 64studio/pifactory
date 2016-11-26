@@ -1,0 +1,8 @@
+Package: firmware-rpi
+Version: 4.4.20-4
+Section: kernel
+Priority: optional
+Architecture: armhf
+Maintainer: Chris Obbard <chris@64studio.com>
+Description: provides non-free firmware
+ .

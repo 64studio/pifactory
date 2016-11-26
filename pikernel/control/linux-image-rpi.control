@@ -1,0 +1,8 @@
+Package: linux-image-rpi
+Version: 4.4.33-1
+Section: kernel
+Priority: optional
+Architecture: armhf
+Maintainer: Chris Obbard <chris@64studio.com>
+Description: provides linux kernel
+ .
